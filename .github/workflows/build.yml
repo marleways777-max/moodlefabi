@@ -29,8 +29,12 @@ jobs:
           python -m pip install --upgrade pip
           pip install buildozer cython==0.29.36 virtualenv setuptools
 
-      - name: Fijar la versión del NDK de Android
-        run: sed -i '/^android.archs/a android.ndk = 25b' buildozer.spec
+      - name: Fijar versiones probadas de Android
+        run: |
+          sed -i '/^android.archs/a android.ndk = 25b' buildozer.spec
+          sed -i '/^android.archs/a p4a.branch = v2024.01.21' buildozer.spec
+          sed -i 's/^android.api = .*/android.api = 33/' buildozer.spec
+          cat buildozer.spec
 
       - name: Construir el APK
         run: |
