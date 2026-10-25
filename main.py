@@ -27,6 +27,7 @@ from kivy.graphics import Color, RoundedRectangle, Line, Ellipse, Rectangle, Mes
 from kivy.graphics.texture import Texture
 from kivy.uix.widget import Widget
 from kivy.clock import Clock
+from kivy.metrics import dp, sp
 import requests
 
 from bs4 import BeautifulSoup
@@ -642,6 +643,101 @@ def abrir_con_sesion(url):
             ws.close()
 
 
+# ----------------------------------------------------------------------
+# ANDROID: abrir la actividad DENTRO de la app, con la sesión ya iniciada
+# ----------------------------------------------------------------------
+WEBVIEW = {"vista": None}
+
+if EN_ANDROID:
+    from android.runnable import run_on_ui_thread
+else:
+    def run_on_ui_thread(f):
+        return f
+
+
+def _quitar_webview_interno():
+    vista = WEBVIEW["vista"]
+    if vista is None:
+        return
+    try:
+        from jnius import cast
+        vista.loadUrl("about:blank")
+        padre = vista.getParent()
+        if padre is not None:
+            cast('android.view.ViewGroup', padre).removeView(vista)
+        vista.destroy()
+    except Exception as e:
+        registrar_log(f"Error cerrando navegador interno: {e}")
+    WEBVIEW["vista"] = None
+
+
+@run_on_ui_thread
+def _crear_webview(url, cookies, base):
+    try:
+        from jnius import autoclass
+        PythonActivity = autoclass('org.kivy.android.PythonActivity')
+        WebView = autoclass('android.webkit.WebView')
+        WebViewClient = autoclass('android.webkit.WebViewClient')
+        LayoutParams = autoclass('android.view.ViewGroup$LayoutParams')
+        CookieManager = autoclass('android.webkit.CookieManager')
+        activity = PythonActivity.mActivity
+
+        if WEBVIEW["vista"] is not None:
+            _quitar_webview_interno()
+
+        vista = WebView(activity)
+        ajustes = vista.getSettings()
+        ajustes.setJavaScriptEnabled(True)
+        ajustes.setDomStorageEnabled(True)
+        ajustes.setUseWideViewPort(True)
+        ajustes.setLoadWithOverviewMode(True)
+        ajustes.setBuiltInZoomControls(True)
+        ajustes.setDisplayZoomControls(False)
+
+        gestor = CookieManager.getInstance()
+        gestor.setAcceptCookie(True)
+        for nombre, valor in cookies:
+            gestor.setCookie(base, f"{nombre}={valor}; Path=/; Secure")
+        gestor.flush()
+
+        vista.setWebViewClient(WebViewClient())
+        activity.addContentView(vista, LayoutParams(-1, -1))
+        WEBVIEW["vista"] = vista
+        vista.loadUrl(url)
+    except Exception as e:
+        registrar_log(f"Error abriendo navegador interno: {e}")
+
+
+@run_on_ui_thread
+def cerrar_webview():
+    vista = WEBVIEW["vista"]
+    if vista is None:
+        return
+    try:
+        if vista.canGoBack():
+            vista.goBack()
+            return
+    except Exception:
+        pass
+    _quitar_webview_interno()
+
+
+def abrir_webview_android(url):
+    """Abre la actividad en un navegador dentro de la app, ya con la sesión."""
+    base = DATOS_AUTOLOGIN["url_base"]
+    host = urlparse(base).hostname or ""
+    cookies = []
+    for c in SESSION_GLOBAL.cookies:
+        dominio = (c.domain or "").lstrip(".")
+        if dominio and dominio not in host and host not in dominio:
+            continue
+        cookies.append((c.name, c.value))
+    if not cookies:
+        return False
+    _crear_webview(url, cookies, base)
+    return True
+
+
 def obtener_url_autologin(destino):
     """
     (Respaldo) Pide a Moodle un enlace de acceso automático usando el servicio
@@ -955,7 +1051,7 @@ class BotonDios(Button):
             Color(*self.main_color)
             self.rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[12])
             Color(1, 1, 1, 0.25)
-            self.line = Line(rounded_rectangle=(self.pos[0], self.pos[1], self.size[0], self.size[1], 12), width=1)
+            self.line = Line(rounded_rectangle=(self.pos[0], self.pos[1], self.size[0], self.size[1], 12), width=dp(1))
 
         self.bind(pos=self._update_graphics, size=self._update_graphics)
 
@@ -1081,19 +1177,19 @@ class LoginScreen(Screen):
 
         self.bind(pos=self._update_bg, size=self._update_bg)
 
-        main_layout = BoxLayout(orientation='vertical', padding=[28, 22, 28, 22], spacing=12)
+        main_layout = BoxLayout(orientation='vertical', padding=[dp(12), dp(16), dp(12), dp(16)], spacing=dp(12))
 
-        header_box = BoxLayout(orientation='vertical', size_hint_y=None, height=156, spacing=0)
+        header_box = BoxLayout(orientation='vertical', size_hint_y=None, height=dp(156), spacing=dp(0))
         header_box.add_widget(Label(
-            text=espaciar("ELABORADO POR FABIOLA FLORES"),
+            text="ELABORADO POR FABIOLA FLORES",
             font_name=fuente_bonita() or "Roboto",
-            font_size=15,
+            font_size=sp(17),
             color=(0.72, 0.93, 1, 1),
             size_hint_y=None,
-            height=28,
+            height=dp(28),
         ))
         header_box.add_widget(Label(
-            text=TITULO_PANTALLA, font_size=58, bold=True,
+            text=TITULO_PANTALLA, font_size=sp(44), bold=True,
             color=(0.08, 0.2, 0.32, 1), outline_width=3, outline_color=(0.95, 0.78, 0.4, 1)
         ))
         main_layout.add_widget(header_box)
@@ -1101,15 +1197,15 @@ class LoginScreen(Screen):
 
         form_card = PanelBiselado(
             orientation='vertical',
-            padding=[24, 20, 24, 20],
-            spacing=8,
+            padding=[dp(14), dp(16), dp(14), dp(16)],
+            spacing=dp(8),
             size_hint_y=None,
-            height=320,
+            height=dp(350),
         )
 
         def etiqueta(texto):
-            lbl = Label(text=texto, font_size=12, bold=True, color=(0.6, 0.85, 1, 1),
-                        size_hint_y=None, height=18, halign='left')
+            lbl = Label(text=texto, font_size=sp(15), bold=True, color=(0.6, 0.85, 1, 1),
+                        size_hint_y=None, height=dp(22), halign='left')
             lbl.bind(size=lbl.setter('text_size'))
             return lbl
 
@@ -1123,18 +1219,18 @@ class LoginScreen(Screen):
                 foreground_color=(0.9, 0.97, 1, 1),
                 hint_text_color=(0.45, 0.62, 0.72, 1),
                 cursor_color=(0.2, 0.9, 1, 1),
-                font_size=20,
-                padding=[14, 14, 14, 14],
+                font_size=sp(14),
+                padding=[dp(14), dp(14), dp(14), dp(14)],
                 **kw
             )
 
         form_card.add_widget(etiqueta("Link de la universidad"))
-        row_url = BoxLayout(orientation='horizontal', spacing=8, size_hint_y=None, height=60)
+        row_url = BoxLayout(orientation='horizontal', spacing=dp(8), size_hint_y=None, height=dp(60))
         self.input_url = campo_texto(
             text="",
             hint_text="Ej: https://aula.tuuniversidad.edu/login/index.php",
         )
-        self.chk_url = CheckBox(active=False, size_hint_x=None, width=35, color=(0, 0.9, 1, 1))
+        self.chk_url = CheckBox(active=False, size_hint_x=None, width=dp(35), color=(0, 0.9, 1, 1))
         self.chk_url.bind(active=self.on_chk_url_change)
         marco_url = CampoNeon()
         marco_url.add_widget(self.input_url)
@@ -1143,9 +1239,9 @@ class LoginScreen(Screen):
         form_card.add_widget(row_url)
 
         form_card.add_widget(etiqueta("Usuario"))
-        row_user = BoxLayout(orientation='horizontal', spacing=8, size_hint_y=None, height=60)
+        row_user = BoxLayout(orientation='horizontal', spacing=dp(8), size_hint_y=None, height=dp(60))
         self.input_usuario = campo_texto(text="", hint_text="Ingresa tu usuario institucional")
-        self.chk_user = CheckBox(active=False, size_hint_x=None, width=35, color=(0, 0.9, 1, 1))
+        self.chk_user = CheckBox(active=False, size_hint_x=None, width=dp(35), color=(0, 0.9, 1, 1))
         self.chk_user.bind(active=self.on_chk_user_change)
         marco_user = CampoNeon()
         marco_user.add_widget(self.input_usuario)
@@ -1154,7 +1250,7 @@ class LoginScreen(Screen):
         form_card.add_widget(row_user)
 
         form_card.add_widget(etiqueta("Contraseña"))
-        row_pass = BoxLayout(orientation='horizontal', spacing=6, size_hint_y=None, height=60)
+        row_pass = BoxLayout(orientation='horizontal', spacing=dp(6), size_hint_y=None, height=dp(60))
         self.input_password = campo_texto(text="", hint_text="Ingresa tu contraseña", password=True)
         marco_pass = CampoNeon()
         marco_pass.add_widget(self.input_password)
@@ -1164,12 +1260,12 @@ class LoginScreen(Screen):
             main_color=(0.06, 0.2, 0.32, 1),
             color=(0, 0.9, 1, 1),
             size_hint_x=None,
-            width=56,
-            font_size=14
+            width=dp(56),
+            font_size=sp(17)
         )
         self.btn_eye.bind(on_press=self.toggle_password_visibility)
 
-        self.chk_pass = CheckBox(active=False, size_hint_x=None, width=35, color=(0, 0.9, 1, 1))
+        self.chk_pass = CheckBox(active=False, size_hint_x=None, width=dp(35), color=(0, 0.9, 1, 1))
         self.chk_pass.bind(active=self.on_chk_pass_change)
 
         row_pass.add_widget(marco_pass)
@@ -1183,13 +1279,13 @@ class LoginScreen(Screen):
 
         main_layout.add_widget(form_card)
 
-        self.lbl_estado = Label(text="Ingresa tus credenciales para continuar.", color=(0.6, 0.7, 0.9, 1), size_hint_y=None, height=22, font_size=12)
+        self.lbl_estado = Label(text="Ingresa tus credenciales para continuar.", color=(0.6, 0.7, 0.9, 1), size_hint_y=None, height=dp(22), font_size=sp(15))
         main_layout.add_widget(self.lbl_estado)
         main_layout.add_widget(Widget(size_hint_y=1))
 
         btn_login = BotonNeon(
-            text="INICIAR SESION", color=(1, 1, 1, 1), bold=True, font_size=17,
-            size_hint_y=None, height=56
+            text="INICIAR SESION", color=(1, 1, 1, 1), bold=True, font_size=sp(19),
+            size_hint_y=None, height=dp(56)
         )
         btn_login.bind(on_press=self.intentar_conexion)
         main_layout.add_widget(btn_login)
@@ -1300,24 +1396,24 @@ class DashboardScreen(Screen):
             self.bg_rect = RoundedRectangle(pos=self.pos, size=self.size, radius=[0])
         self.bind(pos=self._update_bg, size=self._update_bg)
 
-        layout = BoxLayout(orientation='vertical', padding=15, spacing=12)
+        layout = BoxLayout(orientation='vertical', padding=dp(8), spacing=dp(8))
 
-        top_bar = TarjetaDios(orientation='horizontal', size_hint_y=None, height=50, padding=[12, 6, 12, 6], border_color=(0, 0.85, 1, 0.4), bg_color=(0.07, 0.09, 0.18, 0.9))
-        top_bar.add_widget(Label(text="MOODLE FABI", font_size=15, bold=True, color=(0, 0.9, 1, 1)))
+        top_bar = TarjetaDios(orientation='horizontal', size_hint_y=None, height=dp(50), padding=[dp(12), dp(6), dp(12), dp(6)], border_color=(0, 0.85, 1, 0.4), bg_color=(0.07, 0.09, 0.18, 0.9))
+        top_bar.add_widget(Label(text="MOODLE FABI", font_size=sp(17), bold=True, color=(0, 0.9, 1, 1)))
 
-        btn_salir = BotonDios(text="SALIR", main_color=(0.85, 0.1, 0.3, 1), size_hint_x=None, width=75, color=(1, 1, 1, 1), bold=True, font_size=11)
+        btn_salir = BotonDios(text="SALIR", main_color=(0.85, 0.1, 0.3, 1), size_hint_x=None, width=dp(75), color=(1, 1, 1, 1), bold=True, font_size=sp(14))
         btn_salir.bind(on_press=self.cerrar_sesion)
         top_bar.add_widget(btn_salir)
         layout.add_widget(top_bar)
 
-        filtros_bar = BoxLayout(size_hint_y=None, height=42, spacing=8)
-        btn_tareas = BotonDios(text="TAREAS", main_color=(0, 0.5, 0.9, 1), bold=True, font_size=12)
+        filtros_bar = BoxLayout(size_hint_y=None, height=dp(46), spacing=dp(8))
+        btn_tareas = BotonDios(text="TAREAS", main_color=(0, 0.5, 0.9, 1), bold=True, font_size=sp(15))
         btn_tareas.bind(on_press=lambda x: self.cambiar_categoria("TAREAS"))
 
-        btn_tests = BotonDios(text="TESTS", main_color=(0.9, 0.3, 0, 1), bold=True, font_size=12)
+        btn_tests = BotonDios(text="TESTS", main_color=(0.9, 0.3, 0, 1), bold=True, font_size=sp(15))
         btn_tests.bind(on_press=lambda x: self.cambiar_categoria("TESTS"))
 
-        btn_simuladores = BotonDios(text="SIMULADORES", main_color=(0.6, 0.1, 0.8, 1), bold=True, font_size=12)
+        btn_simuladores = BotonDios(text="SIMULADORES", main_color=(0.6, 0.1, 0.8, 1), bold=True, font_size=sp(15))
         btn_simuladores.bind(on_press=lambda x: self.cambiar_categoria("SIMULADORES"))
 
         filtros_bar.add_widget(btn_tareas)
@@ -1325,11 +1421,14 @@ class DashboardScreen(Screen):
         filtros_bar.add_widget(btn_simuladores)
         layout.add_widget(filtros_bar)
 
-        self.lbl_sinc = Label(text="Sincronización lista.", font_size=11, color=(0, 0.9, 0.6, 1), size_hint_y=None, height=20)
+        self.lbl_sinc = Label(text="Sincronización lista.", font_size=sp(14), color=(0, 0.9, 0.6, 1), size_hint_y=None, height=dp(20))
+        self.lbl_sinc.halign = 'center'
+        self.lbl_sinc.bind(width=lambda i, w: setattr(i, 'text_size', (w, None)))
+        self.lbl_sinc.bind(texture_size=lambda i, ts: setattr(i, 'height', max(dp(20), ts[1] + dp(4))))
         layout.add_widget(self.lbl_sinc)
 
         scroll = ScrollView()
-        self.grid_materias = GridLayout(cols=1, spacing=12, size_hint_y=None)
+        self.grid_materias = GridLayout(cols=1, spacing=dp(12), size_hint_y=None)
         self.grid_materias.bind(minimum_height=self.grid_materias.setter('height'))
 
         scroll.add_widget(self.grid_materias)
@@ -1374,8 +1473,9 @@ class DashboardScreen(Screen):
 
         def trabajo():
             if EN_ANDROID:
-                # En el celular se abre el enlace en el navegador del teléfono.
-                webbrowser.open(url)
+                asegurar_sesion()
+                if not abrir_webview_android(url):
+                    webbrowser.open(url)
                 Clock.schedule_once(restaurar, 1.5)
                 return
             asegurar_sesion()
@@ -1421,7 +1521,7 @@ class DashboardScreen(Screen):
             materias = list(MATERIAS_DETECTADAS)
 
         if not materias:
-            lbl_info = Label(text="Cargando tus materias... la primera vez puede tardar un par de minutos.", font_size=12, color=(0.5, 0.6, 0.7, 1), size_hint_y=None, height=40)
+            lbl_info = Label(text="Cargando tus materias... la primera vez puede tardar un par de minutos.", font_size=sp(15), color=(0.5, 0.6, 0.7, 1), size_hint_y=None, height=dp(40))
             self.grid_materias.add_widget(lbl_info)
             return
 
@@ -1429,48 +1529,51 @@ class DashboardScreen(Screen):
             items_materia = mat.get(clave_actividad, [])
             cant_items = len(items_materia)
             def _alto_item(it):
-                return 112 if it.get("info") else 92
+                return dp(150) if it.get("info") else dp(120)
 
-            altura_seccion = 55 + (
-                sum(_alto_item(i) + 8 for i in items_materia) if items_materia else 100
+            altura_seccion = dp(55) + (
+                sum(_alto_item(i) + dp(8) for i in items_materia) if items_materia else dp(100)
             )
 
             seccion_box = TarjetaDios(
                 orientation='vertical',
-                padding=[14, 10, 14, 10],
-                spacing=8,
+                padding=[dp(10), dp(8), dp(10), dp(8)],
+                spacing=dp(8),
                 size_hint_y=None,
                 height=altura_seccion,
                 border_color=(0.7, 0.2, 1, 0.4),
                 bg_color=(0.07, 0.09, 0.18, 0.95)
             )
 
+            seccion_box.bind(minimum_height=seccion_box.setter('height'))
+
             header_materia = Label(
                 text=mat['nombre'].upper(),
-                font_size=13,
+                font_size=sp(16),
                 bold=True,
                 color=(0, 0.9, 1, 1),
                 halign='left',
                 size_hint_y=None,
-                height=28
+                height=dp(28)
             )
-            header_materia.bind(size=header_materia.setter('text_size'))
+            header_materia.bind(width=lambda i, w: setattr(i, 'text_size', (w, None)))
+            header_materia.bind(texture_size=lambda i, ts: setattr(i, 'height', ts[1] + dp(8)))
             seccion_box.add_widget(header_materia)
 
             if not items_materia:
                 lbl_vacio = Label(
                     text=f" Sin {self.categoria_actual.lower()} registradas.",
-                    font_size=11,
+                    font_size=sp(14),
                     color=(0.4, 0.5, 0.6, 1),
                     halign='left',
                     size_hint_y=None,
-                    height=24
+                    height=dp(24)
                 )
                 lbl_vacio.bind(size=lbl_vacio.setter('text_size'))
                 seccion_box.add_widget(lbl_vacio)
             else:
                 for item in items_materia:
-                    fila_item = BoxLayout(orientation='horizontal', spacing=10, size_hint_y=None, height=_alto_item(item))
+                    fila_item = BoxLayout(orientation='horizontal', spacing=dp(10), size_hint_y=None, height=_alto_item(item))
 
                     texto_completo = f"[b]{item['nombre']}[/b]"
                     if item.get("fechas"):
@@ -1486,21 +1589,22 @@ class DashboardScreen(Screen):
                     lbl_item = Label(
                         text=texto_completo,
                         markup=True,
-                        font_size=11,
+                        font_size=sp(14),
                         color=(1, 1, 1, 1),
                         halign='left',
                         valign='middle'
                     )
-                    lbl_item.bind(size=lbl_item.setter('text_size'))
+                    lbl_item.bind(width=lambda i, w: setattr(i, 'text_size', (w, None)))
+                    lbl_item.bind(texture_size=lambda i, ts, fila=fila_item: setattr(fila, 'height', max(dp(76), ts[1] + dp(14))))
 
                     btn_ir = BotonDios(
                         text="ABRIR",
                         main_color=(0, 0.8, 0.4, 1),
                         size_hint_x=None,
-                        width=85,
+                        width=dp(85),
                         color=(1, 1, 1, 1),
                         bold=True,
-                        font_size=11
+                        font_size=sp(14)
                     )
                     btn_ir.bind(on_press=lambda instance, url=item['link']: self.abrir_enlace_directo(url))
 
@@ -1578,11 +1682,19 @@ class DashboardScreen(Screen):
 
 
 class MoodleFabiAppCompleta(App):
+    def _tecla_atras(self, ventana, tecla, *args):
+        # Botón Atrás del celular: cierra/retrocede el navegador interno.
+        if tecla == 27 and WEBVIEW["vista"] is not None:
+            cerrar_webview()
+            return True
+        return False
+
     def build(self):
         if EN_ANDROID:
             try:
                 from kivy.core.window import Window
                 Window.softinput_mode = "below_target"  # el teclado no tapa los campos
+                Window.bind(on_keyboard=self._tecla_atras)
                 from android.permissions import request_permissions
                 request_permissions([
                     "android.permission.INTERNET",
